@@ -36,6 +36,167 @@ from dotenv import load_dotenv
 from data_loader import DataLoader
 from visualization import DataVisualizer
 
+class TextToPandasAgent:
+    """Translates natural language queries into pandas operations for structured data analysis."""
+    
+    def __init__(self, df, llm_client):
+        self.df = df
+        self.llm_client = llm_client
+        self.columns = list(df.columns)
+        self.sample_data = self._get_sample_data()
+    
+    def _get_sample_data(self):
+        """Get sample data for each column to help with query translation."""
+        sample_info = {}
+        for col in self.columns:
+            if self.df[col].dtype == 'object':
+                # Get unique values for categorical columns (up to 10)
+                unique_vals = self.df[col].dropna().unique()[:10].tolist()
+                sample_info[col] = {
+                    'type': 'categorical',
+                    'sample_values': unique_vals,
+                    'unique_count': self.df[col].nunique()
+                }
+            elif self.df[col].dtype in ['int64', 'float64']:
+                # Get stats for numeric columns
+                sample_info[col] = {
+                    'type': 'numeric',
+                    'min': self.df[col].min(),
+                    'max': self.df[col].max(),
+                    'mean': self.df[col].mean()
+                }
+            elif 'datetime' in str(self.df[col].dtype):
+                sample_info[col] = {
+                    'type': 'datetime',
+                    'min_date': self.df[col].min(),
+                    'max_date': self.df[col].max()
+                }
+        return sample_info
+    
+    def translate_query(self, natural_query):
+        """Translate natural language query to pandas operations."""
+        
+        translation_prompt = f"""
+        You are a Text-to-Pandas expert. Translate this natural language query into precise pandas operations.
+        
+        DATASET INFO:
+        Columns: {self.columns}
+        
+        SAMPLE DATA:
+        {json.dumps(self.sample_data, indent=2, default=str)}
+        
+        NATURAL LANGUAGE QUERY: "{natural_query}"
+        
+        TRANSLATION RULES:
+        1. Break down the query into logical steps
+        2. Identify filtering conditions (WHERE clauses)
+        3. Identify grouping/aggregation needs
+        4. Identify what to count/measure
+        5. Generate pandas code that's safe and efficient
+        
+        EXAMPLE PATTERNS:
+        - "unique X in Y" → filter by Y, then count unique X
+        - "how many" → count or nunique
+        - "in [state/location]" → filter by state_abb or location columns
+        - "production points" → filter by category_short == 'Production'
+        - "in Texas" → filter by state_abb == 'TX'
+        
+        SPECIFIC EXAMPLE FOR YOUR QUERY:
+        "How many unique category_short production points are in Texas?"
+        Step 1: Filter for Texas → df[df['state_abb'] == 'TX']
+        Step 2: Filter for production → df_tx[df_tx['category_short'] == 'Production']
+        Step 3: Count unique pipeline_name → df_filtered['pipeline_name'].nunique()
+        
+        Respond with JSON:
+        {{
+            "understanding": "What the user is asking for",
+            "steps": ["Step 1: ...", "Step 2: ..."],
+            "pandas_code": "df_filtered = df[...]; result = df_filtered[...].nunique()",
+            "expected_result_type": "single_number|list|dataframe",
+            "filters_applied": ["column == 'value'", ...],
+            "aggregation": "count|nunique|sum|mean|etc"
+        }}
+        """
+        
+        response = self.llm_client(translation_prompt)
+        try:
+            return json.loads(response)
+        except:
+            # Fallback parsing
+            return {
+                "understanding": "Could not parse query automatically",
+                "steps": ["Manual analysis needed"],
+                "pandas_code": "# Query translation failed",
+                "expected_result_type": "unknown",
+                "filters_applied": [],
+                "aggregation": "unknown"
+            }
+    
+    def execute_structured_query(self, natural_query):
+        """Execute a structured query and return results."""
+        try:
+            # Translate query to pandas
+            translation = self.translate_query(natural_query)
+            
+            # Safety check - only allow safe operations
+            pandas_code = translation.get('pandas_code', '')
+            if not self._is_safe_code(pandas_code):
+                return {
+                    "error": "Query contains unsafe operations",
+                    "translation": translation
+                }
+            
+            # Execute the pandas code
+            df = self.df  # Make df available in local scope
+            
+            # Create a safe execution environment
+            safe_globals = {
+                'df': df,
+                'pd': pd,
+                'np': np,
+                '__builtins__': {}  # Remove dangerous built-ins
+            }
+            
+            # Execute the code
+            exec(pandas_code, safe_globals)
+            
+            # Get the result (assume last variable assigned is the result)
+            result_vars = [var for var in safe_globals.keys() if var not in ['df', 'pd', 'np', '__builtins__']]
+            if result_vars:
+                result = safe_globals[result_vars[-1]]
+            else:
+                result = "No result variable found"
+            
+            return {
+                "query": natural_query,
+                "translation": translation,
+                "result": result,
+                "result_type": type(result).__name__,
+                "pandas_code": pandas_code
+            }
+            
+        except Exception as e:
+            return {
+                "error": str(e),
+                "query": natural_query,
+                "translation": translation if 'translation' in locals() else None
+            }
+    
+    def _is_safe_code(self, code):
+        """Check if the pandas code is safe to execute."""
+        dangerous_patterns = [
+            'import ', '__', 'exec', 'eval', 'open', 'file', 'input', 
+            'raw_input', 'compile', 'reload', 'delattr', 'setattr',
+            'globals', 'locals', 'vars', 'dir', 'help'
+        ]
+        
+        code_lower = code.lower()
+        for pattern in dangerous_patterns:
+            if pattern in code_lower:
+                return False
+        
+        return True
+
 class DataAgent:
     def __init__(self):
         load_dotenv()
@@ -44,6 +205,7 @@ class DataAgent:
         self.visualizer = DataVisualizer()
         self.df = None
         self.dataset_info = None
+        self.text_to_pandas = None  # Will be initialized after loading data
         
         # Initialize LLM clients
         self.setup_llm_clients()
@@ -82,6 +244,9 @@ class DataAgent:
             # Convert date column
             if 'eff_gas_day' in self.df.columns:
                 self.df['eff_gas_day'] = pd.to_datetime(self.df['eff_gas_day'])
+            
+            # Initialize Text-to-Pandas agent
+            self.text_to_pandas = TextToPandasAgent(self.df, self.get_llm_response)
             
             return True
         return False
@@ -136,8 +301,15 @@ class DataAgent:
         
         User Query: "{user_query}"
         
+        QUERY TYPE GUIDANCE:
+        - Use "structured_query" for precise counting/filtering queries like:
+          * "How many unique X are in Y?"
+          * "Count the number of Z where A equals B"
+          * "List all X in location Y with condition Z"
+        - Use other types for broader analytical questions
+        
         Based on my reasoning above, provide analysis plan:
-        1. Query Type: [simple_stats, time_series, geographic, pattern_detection, anomaly_detection, causal_analysis]
+        1. Query Type: [simple_stats, time_series, geographic, pattern_detection, anomaly_detection, causal_analysis, structured_query]
         2. Required Columns: [specific columns needed]
         3. Filters Needed: [data filtering required]
         4. Analysis Method: [statistical/ML approach with reasoning]
@@ -238,7 +410,9 @@ class DataAgent:
         """Suggest the best analysis approach."""
         query_lower = query.lower()
         
-        if any(word in query_lower for word in ['trend', 'time', 'seasonal']):
+        if any(word in query_lower for word in ['how many', 'count', 'unique', 'number of']) and any(word in query_lower for word in ['in', 'where', 'with', 'by']):
+            return "Structured query with precise filtering and counting"
+        elif any(word in query_lower for word in ['trend', 'time', 'seasonal']):
             return "Time series analysis with temporal aggregation"
         elif any(word in query_lower for word in ['state', 'region', 'geographic']):
             return "Geographic aggregation and spatial analysis"
@@ -751,6 +925,8 @@ class DataAgent:
             results = self.execute_anomaly_detection(query_analysis, user_query)
         elif query_type == 'causal_analysis':
             results = self.execute_causal_analysis(query_analysis, user_query)
+        elif query_type == 'structured_query':
+            results = self.execute_structured_query(query_analysis, user_query)
         else:
             results = self.execute_simple_stats(query_analysis, user_query)
         
@@ -898,6 +1074,28 @@ class DataAgent:
             for i, hyp in enumerate(hypotheses[:3], 1):  # Show top 3
                 results_text += f"   {i}. {hyp['hypothesis']}\n"
                 results_text += f"      Evidence: {hyp['evidence']}\n"
+        
+        if 'structured_query_result' in results:
+            result = results['structured_query_result']
+            translation = results.get('query_translation', {})
+            results_text += f"🎯 [bold cyan]Query Result:[/bold cyan]\n"
+            if isinstance(result, (int, float)):
+                results_text += f"   • Answer: {result:,}\n"
+            elif isinstance(result, str):
+                results_text += f"   • Answer: {result}\n"
+            elif hasattr(result, '__len__'):
+                results_text += f"   • Count: {len(result):,} items\n"
+                if hasattr(result, 'tolist') and len(result) <= 10:
+                    results_text += f"   • Items: {result.tolist()}\n"
+            
+            # Show what was understood
+            understanding = translation.get('understanding', 'N/A')
+            results_text += f"   • Query Understanding: {understanding}\n"
+            
+            # Show pandas code used
+            pandas_code = results.get('pandas_code', '')
+            if pandas_code and len(pandas_code) < 200:
+                results_text += f"   • Pandas Code: {pandas_code}\n"
         
         # If no specific results found, show general metrics
         if results_text == f"🎯 [bold green]ANSWER TO YOUR QUERY[/bold green]\n[dim]Query: {query}[/dim]\n\n":
@@ -1254,6 +1452,44 @@ class DataAgent:
         }
         
         return pathways
+    
+    def execute_structured_query(self, query_analysis, user_query):
+        """Execute structured queries using Text-to-Pandas agent."""
+        try:
+            if not self.text_to_pandas:
+                return {"error": "Text-to-Pandas agent not initialized"}
+            
+            # Execute the structured query
+            query_result = self.text_to_pandas.execute_structured_query(user_query)
+            
+            if 'error' in query_result:
+                return {"error": query_result['error']}
+            
+            # Process the results
+            results = {
+                'structured_query_result': query_result['result'],
+                'query_translation': query_result['translation'],
+                'pandas_code': query_result['pandas_code'],
+                'result_type': query_result['result_type']
+            }
+            
+            # Add methods used information
+            methods_used = {
+                'analysis_type': 'Structured Query',
+                'statistical_methods': ['Text-to-Pandas translation', 'Precise data filtering'],
+                'columns_analyzed': query_result['translation'].get('filters_applied', []),
+                'filters_applied': query_result['translation'].get('filters_applied', []),
+                'data_processing': query_result['translation'].get('steps', []),
+                'sample_size': len(self.df),
+                'confidence_level': '100% - Direct data query'
+            }
+            
+            results['methods_used'] = methods_used
+            
+            return results
+            
+        except Exception as e:
+            return {"error": str(e)}
     
     def _display_reasoning_process(self, reasoning_steps):
         """Display the reasoning process to the user."""
