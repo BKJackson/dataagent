@@ -284,7 +284,7 @@ requirements.txt       # Python dependencies
 
 ## 🤝 Contributing
 
-This project was built for SynMax evaluation. Key design decisions:
+Key design decisions:
 
 1. **Modularity**: Separate concerns for data loading, analysis, and presentation
 2. **Scalability**: Efficient handling of large datasets with chunking and sampling
@@ -293,7 +293,7 @@ This project was built for SynMax evaluation. Key design decisions:
 
 ## 📄 License
 
-This project is created for evaluation purposes. All dependencies maintain their respective licenses.
+This project is open source for educational and demonstration purposes. All dependencies maintain their respective licenses.
 
 ---
 
