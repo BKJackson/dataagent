@@ -113,12 +113,20 @@ class DataAgent:
         
         return "No LLM available. Please set API keys."
     
-    def analyze_query(self, user_query):
-        """Analyze user query and determine analysis approach."""
-        analysis_prompt = f"""
-        Analyze this user query about a natural gas pipeline dataset and determine the best approach:
+    def analyze_query_with_reasoning(self, user_query):
+        """Enhanced query analysis with step-by-step reasoning."""
         
-        Dataset Info:
+        # Step 1: Reasoning about the query
+        reasoning_steps = self._generate_reasoning_steps(user_query)
+        
+        # Step 2: Enhanced analysis with reasoning context
+        analysis_prompt = f"""
+        Let me think through this step-by-step:
+        
+        REASONING PROCESS:
+        {chr(10).join(reasoning_steps)}
+        
+        Dataset Context:
         - 23.8M rows of pipeline transaction data
         - Columns: pipeline_name, loc_name, connecting_pipeline, connecting_entity, rec_del_sign, 
           category_short, country_name, state_abb, county_name, eff_gas_day, scheduled_quantity
@@ -128,28 +136,143 @@ class DataAgent:
         
         User Query: "{user_query}"
         
-        Classify this query and suggest analysis approach:
+        Based on my reasoning above, provide analysis plan:
         1. Query Type: [simple_stats, time_series, geographic, pattern_detection, anomaly_detection, causal_analysis]
-        2. Required Columns: [list specific columns needed]
-        3. Filters Needed: [any data filtering required]
-        4. Analysis Method: [describe statistical/ML approach]
-        5. Expected Output: [what format to present results]
+        2. Required Columns: [specific columns needed]
+        3. Filters Needed: [data filtering required]
+        4. Analysis Method: [statistical/ML approach with reasoning]
+        5. Expected Output: [format to present results]
+        6. Potential Issues: [what could go wrong]
+        7. Validation Strategy: [how to check results]
         
         Respond in JSON format.
         """
         
         response = self.get_llm_response(analysis_prompt)
         try:
-            return json.loads(response)
+            analysis = json.loads(response)
+            analysis['reasoning_steps'] = reasoning_steps
+            return analysis
         except:
-            # Fallback if JSON parsing fails
+            # Fallback with basic reasoning
             return {
                 "query_type": "simple_stats",
                 "required_columns": ["scheduled_quantity"],
                 "filters_needed": [],
                 "analysis_method": "descriptive statistics",
-                "expected_output": "summary table"
+                "expected_output": "summary table",
+                "reasoning_steps": reasoning_steps,
+                "potential_issues": ["JSON parsing failed - using fallback"],
+                "validation_strategy": "Manual review required"
             }
+    
+    def analyze_query(self, user_query):
+        """Analyze user query and determine analysis approach (with reasoning)."""
+        return self.analyze_query_with_reasoning(user_query)
+    
+    def _generate_reasoning_steps(self, user_query):
+        """Generate step-by-step reasoning for the query."""
+        steps = []
+        
+        # Step 1: Query interpretation
+        steps.append(f"🤔 UNDERSTANDING: What is the user really asking? '{user_query}'")
+        
+        # Step 2: Data requirements
+        data_needs = self._identify_data_requirements(user_query)
+        steps.append(f"📊 DATA NEEDED: {data_needs}")
+        
+        # Step 3: Potential issues
+        issues = self._identify_potential_issues(user_query)
+        steps.append(f"⚠️ POTENTIAL ISSUES: {issues}")
+        
+        # Step 4: Analysis approach
+        approach = self._suggest_analysis_approach(user_query)
+        steps.append(f"🔍 ANALYSIS APPROACH: {approach}")
+        
+        # Step 5: Validation strategy
+        validation = self._plan_validation_strategy(user_query)
+        steps.append(f"✅ VALIDATION STRATEGY: {validation}")
+        
+        return steps
+    
+    def _identify_data_requirements(self, query):
+        """Identify what data is needed for the query."""
+        query_lower = query.lower()
+        
+        if any(word in query_lower for word in ['pipeline', 'company', 'operator']):
+            return "pipeline_name, scheduled_quantity for pipeline analysis"
+        elif any(word in query_lower for word in ['state', 'region', 'geographic', 'location']):
+            return "state_abb, county_name, scheduled_quantity for geographic analysis"
+        elif any(word in query_lower for word in ['time', 'trend', 'seasonal', 'month', 'year']):
+            return "eff_gas_day, scheduled_quantity for temporal analysis"
+        elif any(word in query_lower for word in ['volume', 'quantity', 'amount']):
+            return "scheduled_quantity and related dimensions"
+        elif any(word in query_lower for word in ['column', 'field', 'variable']):
+            return "Dataset schema and column information"
+        else:
+            return "Multiple columns likely needed - will determine during analysis"
+    
+    def _identify_potential_issues(self, query):
+        """Identify potential issues with the query/analysis."""
+        issues = []
+        query_lower = query.lower()
+        
+        if any(word in query_lower for word in ['cause', 'effect', 'impact', 'influence']):
+            issues.append("Causal inference - beware of confounders")
+        
+        if any(word in query_lower for word in ['best', 'worst', 'top', 'bottom']):
+            issues.append("Ranking queries may be sensitive to outliers")
+        
+        if any(word in query_lower for word in ['predict', 'forecast', 'future']):
+            issues.append("Prediction requires careful validation")
+        
+        if any(word in query_lower for word in ['anomaly', 'unusual', 'outlier']):
+            issues.append("Anomaly detection sensitive to threshold choices")
+        
+        if not issues:
+            issues.append("Standard data quality and interpretation caveats apply")
+        
+        return "; ".join(issues)
+    
+    def _suggest_analysis_approach(self, query):
+        """Suggest the best analysis approach."""
+        query_lower = query.lower()
+        
+        if any(word in query_lower for word in ['trend', 'time', 'seasonal']):
+            return "Time series analysis with temporal aggregation"
+        elif any(word in query_lower for word in ['state', 'region', 'geographic']):
+            return "Geographic aggregation and spatial analysis"
+        elif any(word in query_lower for word in ['pattern', 'cluster', 'group']):
+            return "Machine learning clustering and pattern detection"
+        elif any(word in query_lower for word in ['anomaly', 'unusual', 'outlier']):
+            return "Statistical anomaly detection with multiple methods"
+        elif any(word in query_lower for word in ['cause', 'correlate', 'relationship']):
+            return "Causal analysis with confounder detection"
+        else:
+            return "Descriptive statistics with appropriate aggregations"
+    
+    def _plan_validation_strategy(self, query):
+        """Plan how to validate the analysis results."""
+        query_lower = query.lower()
+        
+        strategies = []
+        
+        if any(word in query_lower for word in ['top', 'bottom', 'rank']):
+            strategies.append("Cross-check rankings with different metrics")
+        
+        if any(word in query_lower for word in ['trend', 'time']):
+            strategies.append("Validate trends across different time periods")
+        
+        if any(word in query_lower for word in ['anomaly', 'unusual']):
+            strategies.append("Multiple anomaly detection methods for confirmation")
+        
+        if any(word in query_lower for word in ['cause', 'correlate']):
+            strategies.append("Robustness checks and confounder analysis")
+        
+        if not strategies:
+            strategies.append("Sanity checks and domain knowledge validation")
+        
+        return "; ".join(strategies)
     
     def execute_simple_stats(self, query_analysis, user_query):
         """Execute simple statistical queries."""
@@ -600,16 +723,20 @@ class DataAgent:
             return {"error": str(e)}
     
     def process_query(self, user_query):
-        """Main query processing function."""
+        """Enhanced query processing with reasoning and quality assessment."""
         if self.df is None:
             return "Please load a dataset first using load_dataset()."
         
         self.console.print(f"\n🔍 Analyzing query: {user_query}", style="blue")
         
-        # Analyze query with LLM
+        # Step 1: Analyze query with enhanced reasoning
         query_analysis = self.analyze_query(user_query)
         
-        # Execute appropriate analysis
+        # Display reasoning process if available
+        if 'reasoning_steps' in query_analysis:
+            self._display_reasoning_process(query_analysis['reasoning_steps'])
+        
+        # Step 2: Execute appropriate analysis
         query_type = query_analysis.get('query_type', 'simple_stats')
         
         if query_type == 'simple_stats':
@@ -627,30 +754,23 @@ class DataAgent:
         else:
             results = self.execute_simple_stats(query_analysis, user_query)
         
-        # Generate LLM interpretation
-        interpretation_prompt = f"""
-        Provide a clear, concise interpretation of these analysis results for a natural gas pipeline dataset:
+        # Step 3: Quality assessment and meta-reasoning
+        quality_assessment = self._assess_result_quality(results, query_analysis, user_query)
+        confidence_score = self._calculate_confidence_score(results, quality_assessment)
         
-        User Query: "{user_query}"
-        Analysis Type: {query_type}
-        Results: {json.dumps(results, indent=2, default=str)}
-        
-        Provide:
-        1. Key findings (3-5 bullet points)
-        2. Supporting evidence from the data
-        3. Limitations and caveats
-        4. Actionable insights if applicable
-        
-        Keep response under 300 words and focus on business relevance.
-        """
-        
-        interpretation = self.get_llm_response(interpretation_prompt)
+        # Step 4: Enhanced interpretation with reasoning context
+        interpretation = self._get_enhanced_interpretation(user_query, results, query_analysis, quality_assessment, confidence_score)
         
         return {
             'query': user_query,
             'analysis_type': query_type,
             'results': results,
             'interpretation': interpretation,
+            'reasoning_metadata': {
+                'query_analysis': query_analysis,
+                'quality_assessment': quality_assessment,
+                'confidence_score': confidence_score
+            },
             'timestamp': datetime.now().isoformat()
         }
     
@@ -1059,6 +1179,191 @@ class DataAgent:
         }
         
         return pathways
+    
+    def _display_reasoning_process(self, reasoning_steps):
+        """Display the reasoning process to the user."""
+        reasoning_text = "\n🧠 **Reasoning Process:**\n\n"
+        for i, step in enumerate(reasoning_steps, 1):
+            reasoning_text += f"{i}. {step}\n"
+        
+        reasoning_panel = Panel(
+            reasoning_text,
+            title="🧠 AI Reasoning Process",
+            border_style="cyan",
+            padding=(1, 2)
+        )
+        self.console.print(reasoning_panel)
+    
+    def _assess_result_quality(self, results, query_analysis, user_query):
+        """Assess the quality and reliability of analysis results."""
+        quality_assessment = {
+            'overall_quality': 'Good',
+            'data_sufficiency': 'Adequate',
+            'method_appropriateness': 'Appropriate',
+            'validations_performed': [],
+            'potential_issues': [],
+            'improvement_suggestions': [],
+            'reliability_score': 0.8
+        }
+        
+        # Check data sufficiency
+        if hasattr(self, 'df') and len(self.df) > 1000000:
+            quality_assessment['data_sufficiency'] = 'Excellent'
+            quality_assessment['reliability_score'] += 0.1
+        elif hasattr(self, 'df') and len(self.df) > 10000:
+            quality_assessment['data_sufficiency'] = 'Good'
+        else:
+            quality_assessment['data_sufficiency'] = 'Limited'
+            quality_assessment['reliability_score'] -= 0.2
+            quality_assessment['potential_issues'].append('Small sample size may affect reliability')
+        
+        # Check if methods used section exists
+        if 'methods_used' in results:
+            quality_assessment['validations_performed'].append('Methods documentation')
+            quality_assessment['reliability_score'] += 0.1
+        
+        # Check for robustness testing
+        if 'robustness_checks' in results:
+            quality_assessment['validations_performed'].append('Robustness testing')
+            quality_assessment['reliability_score'] += 0.15
+        
+        # Check for visualization
+        if 'visualization' in results:
+            quality_assessment['validations_performed'].append('Visual validation')
+            quality_assessment['reliability_score'] += 0.05
+        
+        # Assess query complexity vs analysis depth
+        query_complexity = self._assess_query_complexity(user_query)
+        analysis_depth = self._assess_analysis_depth(results)
+        
+        if analysis_depth >= query_complexity:
+            quality_assessment['method_appropriateness'] = 'Well-matched'
+        elif analysis_depth < query_complexity:
+            quality_assessment['method_appropriateness'] = 'May be insufficient'
+            quality_assessment['improvement_suggestions'].append('Consider more sophisticated analysis methods')
+            quality_assessment['reliability_score'] -= 0.1
+        
+        # Overall quality assessment
+        if quality_assessment['reliability_score'] >= 0.9:
+            quality_assessment['overall_quality'] = 'Excellent'
+        elif quality_assessment['reliability_score'] >= 0.7:
+            quality_assessment['overall_quality'] = 'Good'
+        elif quality_assessment['reliability_score'] >= 0.5:
+            quality_assessment['overall_quality'] = 'Fair'
+        else:
+            quality_assessment['overall_quality'] = 'Poor'
+        
+        return quality_assessment
+    
+    def _calculate_confidence_score(self, results, quality_assessment):
+        """Calculate overall confidence in the analysis results."""
+        base_confidence = quality_assessment.get('reliability_score', 0.5)
+        confidence_adjustments = 0
+        
+        # Higher confidence for larger sample sizes
+        if 'methods_used' in results:
+            sample_size = results['methods_used'].get('sample_size', 0)
+            if sample_size > 1000000:
+                confidence_adjustments += 0.1
+            elif sample_size > 100000:
+                confidence_adjustments += 0.05
+        
+        # Higher confidence for multiple validations
+        validations = len(quality_assessment.get('validations_performed', []))
+        confidence_adjustments += min(validations * 0.05, 0.15)
+        
+        # Lower confidence for identified issues
+        issues = len(quality_assessment.get('potential_issues', []))
+        confidence_adjustments -= min(issues * 0.05, 0.2)
+        
+        final_confidence = max(0.1, min(1.0, base_confidence + confidence_adjustments))
+        
+        return {
+            'score': round(final_confidence, 2),
+            'level': self._confidence_level_description(final_confidence),
+            'factors': {
+                'base_reliability': base_confidence,
+                'adjustments': confidence_adjustments,
+                'validation_count': validations,
+                'issue_count': issues
+            }
+        }
+    
+    def _confidence_level_description(self, score):
+        """Convert confidence score to descriptive level."""
+        if score >= 0.9:
+            return "Very High - Results are highly reliable"
+        elif score >= 0.8:
+            return "High - Results are reliable with minor caveats"
+        elif score >= 0.7:
+            return "Moderate-High - Results are generally reliable"
+        elif score >= 0.6:
+            return "Moderate - Results should be interpreted carefully"
+        elif score >= 0.5:
+            return "Moderate-Low - Results have significant limitations"
+        else:
+            return "Low - Results require additional validation"
+    
+    def _assess_query_complexity(self, query):
+        """Assess the complexity of the user query (1-5 scale)."""
+        query_lower = query.lower()
+        complexity = 1
+        
+        if any(word in query_lower for word in ['cause', 'effect', 'influence', 'impact']):
+            complexity += 2
+        if any(word in query_lower for word in ['compare', 'versus', 'difference', 'correlation']):
+            complexity += 1
+        if any(word in query_lower for word in ['trend', 'seasonal', 'over time', 'pattern']):
+            complexity += 1
+        if any(word in query_lower for word in ['cluster', 'pattern', 'anomaly', 'predict']):
+            complexity += 1
+        
+        return min(complexity, 5)
+    
+    def _assess_analysis_depth(self, results):
+        """Assess the depth of analysis performed (1-5 scale)."""
+        depth = 1
+        
+        if any(key in results for key in ['dataset_info', 'summary_stats']):
+            depth = 1
+        if any(key in results for key in ['correlations', 'geographic_analysis', 'time_series']):
+            depth = 2
+        if any(key in results for key in ['clustering_results', 'anomaly_scores', 'pattern_analysis']):
+            depth = 3
+        if any(key in results for key in ['robustness_checks', 'causal_pathways', 'confounder_analysis']):
+            depth = 4
+        if 'methods_used' in results:
+            depth += 1
+        
+        return min(depth, 5)
+    
+    def _get_enhanced_interpretation(self, user_query, results, query_analysis, quality_assessment, confidence_score):
+        """Generate enhanced interpretation with reasoning context."""
+        interpretation_prompt = f"""
+        Provide an enhanced interpretation incorporating the AI reasoning process:
+        
+        ORIGINAL QUERY: {user_query}
+        
+        AI REASONING PROCESS:
+        {chr(10).join(query_analysis.get('reasoning_steps', ['No reasoning steps available']))}
+        
+        ANALYSIS RESULTS: {json.dumps(results, default=str, indent=2)[:2000]}...
+        
+        QUALITY ASSESSMENT: {json.dumps(quality_assessment, indent=2)}
+        
+        CONFIDENCE: {confidence_score.get('level', 'Unknown')} ({confidence_score.get('score', 'N/A')})
+        
+        Provide:
+        1. Key Findings (incorporating reasoning context)
+        2. Supporting Evidence (referencing analysis methods)
+        3. Limitations and Caveats (including reasoning limitations)
+        4. Actionable Insights (with confidence levels)
+        5. Reasoning Quality Assessment
+        
+        Focus on how the reasoning process influenced the analysis.
+        """
+        
+        return self.get_llm_response(interpretation_prompt)
     
     def show_help(self):
         """Show help information."""
