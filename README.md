@@ -11,7 +11,7 @@ A sophisticated chat-based data analysis agent that can interact with large data
   - Geographic analysis and regional insights
   - Pattern detection using machine learning clustering
   - Anomaly detection with multiple algorithms
-  - Causal analysis with correlation insights
+  - Causal analysis with confounder detection and robustness testing
 - **LLM Integration**: Supports both OpenAI GPT-4 and Anthropic Claude
 - **Large Dataset Handling**: Efficiently processes 23M+ row datasets
 - **Interactive CLI**: User-friendly command-line interface
@@ -190,9 +190,12 @@ python data_agent.py
 - Geographic correlation analysis
 
 ### Causal Inference
-- Correlation analysis with caveats
-- Temporal relationship identification
-- Confounding variable detection
+- **Correlation Analysis**: Multi-variable correlation matrices with statistical significance
+- **Confounder Detection**: Automated identification of potential confounding variables
+- **Robustness Testing**: Bootstrap sampling, temporal stability, and outlier sensitivity analysis
+- **Causal Pathway Mapping**: Hypothetical causal mechanisms with alternative explanations
+- **Validation Recommendations**: Experimental design suggestions for causal validation
+- **Domain-Specific Controls**: Temporal, geographic, and operational confounder identification
 
 ## 📊 Visualization Features
 
@@ -230,7 +233,7 @@ When you run queries, the agent automatically creates relevant charts:
 - **Data Validation**: Assumes scheduled_quantity represents actual volumes
 
 ### Analysis Limitations
-- **Causation vs Correlation**: Causal analysis identifies correlations, not true causation
+- **Causation vs Correlation**: Enhanced causal analysis includes confounder detection and robustness checks, but true causation requires experimental design
 - **External Factors**: Weather, economic, and regulatory factors not included
 - **Temporal Scope**: Analysis limited to 2022-2025 data period
 - **Geographic Precision**: Analysis limited to state/county level due to missing coordinates

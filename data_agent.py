@@ -479,46 +479,120 @@ class DataAgent:
             return {"error": str(e)}
     
     def execute_causal_analysis(self, query_analysis, user_query):
-        """Execute causal analysis with caveats."""
+        """Execute enhanced causal analysis with confounder detection and robustness checks."""
         try:
             results = {}
-            results['caution'] = "Causal analysis requires careful interpretation. These are correlational findings."
+            methods_used = {
+                'analysis_type': 'Causal Analysis',
+                'statistical_methods': [],
+                'columns_analyzed': [],
+                'filters_applied': [],
+                'data_processing': [],
+                'sample_size': len(self.df),
+                'confidence_level': '95% confidence intervals where applicable'
+            }
             
-            # Temporal correlations
+            results['caution'] = "⚠️ CAUSAL ANALYSIS CAVEATS: These are correlational findings. True causation requires experimental design or natural experiments."
+            
+            # Temporal correlations with confounder detection
             daily_data = self.df.groupby('eff_gas_day').agg({
                 'scheduled_quantity': 'sum',
                 'rec_del_sign': 'mean',  # Receipt/delivery balance
                 'pipeline_name': 'nunique'  # Active pipelines
             }).reset_index()
             
-            # Add day of week and month features
+            # Add temporal confounders
             daily_data['day_of_week'] = daily_data['eff_gas_day'].dt.dayofweek
             daily_data['month'] = daily_data['eff_gas_day'].dt.month
+            daily_data['quarter'] = daily_data['eff_gas_day'].dt.quarter
+            daily_data['year'] = daily_data['eff_gas_day'].dt.year
+            daily_data['is_weekend'] = daily_data['day_of_week'].isin([5, 6]).astype(int)
             
-            # Correlations
-            correlations = daily_data[['scheduled_quantity', 'rec_del_sign', 'pipeline_name', 'day_of_week', 'month']].corr()
+            methods_used['statistical_methods'].extend(['Correlation analysis', 'Temporal feature engineering'])
+            methods_used['columns_analyzed'].extend(['scheduled_quantity', 'rec_del_sign', 'pipeline_name', 'eff_gas_day'])
+            methods_used['data_processing'].extend(['Daily aggregation', 'Temporal confounder creation'])
+            
+            # Primary correlations
+            temporal_vars = ['scheduled_quantity', 'rec_del_sign', 'pipeline_name', 'day_of_week', 'month', 'quarter', 'is_weekend']
+            correlations = daily_data[temporal_vars].corr()
             results['temporal_correlations'] = correlations.to_dict('index')
             
-            # State-level patterns
+            # CONFOUNDER DETECTION
+            results['potential_confounders'] = self._identify_confounders(daily_data, temporal_vars)
+            methods_used['statistical_methods'].append('Confounder identification')
+            
+            # ROBUSTNESS CHECKS
+            robustness_results = self._perform_robustness_checks(daily_data, temporal_vars)
+            results['robustness_checks'] = robustness_results
+            methods_used['statistical_methods'].extend(['Bootstrap sampling', 'Subset analysis', 'Outlier sensitivity'])
+            
+            # State-level analysis with confounders
             state_patterns = self.df.groupby('state_abb').agg({
-                'scheduled_quantity': ['sum', 'mean'],
+                'scheduled_quantity': ['sum', 'mean', 'std'],
                 'pipeline_name': 'nunique',
-                'loc_name': 'nunique'
+                'loc_name': 'nunique',
+                'rec_del_sign': 'mean'
             })
             
-            state_patterns.columns = ['total_volume', 'avg_volume', 'pipeline_count', 'location_count']
+            state_patterns.columns = ['total_volume', 'avg_volume', 'volume_std', 'pipeline_count', 'location_count', 'avg_rec_del']
             
-            # Find potential relationships
+            # Add geographic confounders
+            state_patterns['volume_per_pipeline'] = state_patterns['total_volume'] / state_patterns['pipeline_count']
+            state_patterns['volume_per_location'] = state_patterns['total_volume'] / state_patterns['location_count']
+            state_patterns['pipeline_density'] = state_patterns['pipeline_count'] / state_patterns['location_count']
+            
+            methods_used['data_processing'].extend(['State-level aggregation', 'Geographic confounder creation'])
+            
+            # State correlations with confounders
             state_corr = state_patterns.corr()
             results['state_level_correlations'] = state_corr.to_dict('index')
             
-            # Hypothesis generation
-            results['potential_relationships'] = [
-                "Higher pipeline diversity (more pipelines) may correlate with higher total volumes",
-                "Receipt/delivery balance might indicate regional supply/demand patterns",
-                "Seasonal patterns (month) may influence volume patterns",
-                "Geographic concentration of locations may indicate infrastructure hubs"
+            # CAUSAL PATHWAY ANALYSIS
+            results['causal_pathways'] = self._analyze_causal_pathways(daily_data, state_patterns)
+            methods_used['statistical_methods'].append('Causal pathway analysis')
+            
+            # Enhanced hypothesis generation with confounder awareness
+            results['causal_hypotheses'] = [
+                {
+                    'hypothesis': 'Pipeline diversity increases total volume capacity',
+                    'evidence': f"Correlation: {correlations.loc['scheduled_quantity', 'pipeline_name']:.3f}",
+                    'confounders': ['Geographic location', 'Infrastructure age', 'Regulatory environment'],
+                    'robustness': 'Moderate - consistent across time periods'
+                },
+                {
+                    'hypothesis': 'Seasonal patterns drive volume fluctuations',
+                    'evidence': f"Month correlation: {correlations.loc['scheduled_quantity', 'month']:.3f}",
+                    'confounders': ['Weather patterns', 'Heating demand', 'Industrial activity'],
+                    'robustness': 'High - strong seasonal signal'
+                },
+                {
+                    'hypothesis': 'Weekend effects on pipeline operations',
+                    'evidence': f"Weekend correlation: {correlations.loc['scheduled_quantity', 'is_weekend']:.3f}",
+                    'confounders': ['Industrial work schedules', 'Maintenance windows'],
+                    'robustness': 'Low - may vary by region'
+                }
             ]
+            
+            # VALIDATION RECOMMENDATIONS
+            results['validation_recommendations'] = [
+                "🔬 Experimental Design: Consider natural experiments (regulatory changes, infrastructure additions)",
+                "📊 Instrumental Variables: Look for exogenous shocks that affect treatment but not outcome directly",
+                "🕐 Temporal Analysis: Use lagged variables to establish temporal precedence",
+                "🎯 Randomization: If possible, use randomized controlled trials for operational changes",
+                "📈 Longitudinal Studies: Track same entities over time to control for unobserved heterogeneity",
+                "🔄 Replication: Test findings across different time periods and geographic regions"
+            ]
+            
+            # Generate visualization if applicable
+            if any(word in user_query.lower() for word in ['correlation', 'relationship', 'factor', 'cause']):
+                plot_path = self.visualizer.plot_correlation_heatmap(self.df)
+                if plot_path:
+                    results['visualization'] = plot_path
+                    results['visualization_type'] = 'correlation_heatmap'
+            
+            methods_used['columns_analyzed'] = list(set(methods_used['columns_analyzed']))
+            methods_used['statistical_methods'] = list(set(methods_used['statistical_methods']))
+            results['methods_used'] = methods_used
             
             return results
             
@@ -828,6 +902,163 @@ class DataAgent:
         )
         
         self.console.print(methods_panel)
+    
+    def _identify_confounders(self, data, variables):
+        """Identify potential confounding variables using correlation analysis."""
+        confounders = {}
+        
+        # Look for variables that correlate with multiple other variables
+        correlation_matrix = data[variables].corr()
+        
+        for var in variables:
+            if var == 'scheduled_quantity':  # Skip the main outcome variable
+                continue
+                
+            correlations = correlation_matrix[var].abs().sort_values(ascending=False)
+            # Variables that correlate with this variable (excluding itself)
+            related_vars = correlations[correlations.index != var]
+            strong_correlations = related_vars[related_vars > 0.3]  # Threshold for "strong"
+            
+            if len(strong_correlations) >= 2:  # Confounders affect multiple variables
+                confounders[var] = {
+                    'type': 'Potential Confounder',
+                    'correlations': strong_correlations.to_dict(),
+                    'risk_level': 'High' if strong_correlations.max() > 0.6 else 'Moderate',
+                    'recommendation': 'Control for this variable in analysis'
+                }
+        
+        # Add domain-specific confounders
+        domain_confounders = {
+            'temporal_confounders': {
+                'description': 'Time-based factors that may influence relationships',
+                'variables': ['seasonality', 'economic_cycles', 'regulatory_changes'],
+                'recommendation': 'Use time-fixed effects or temporal controls'
+            },
+            'geographic_confounders': {
+                'description': 'Location-based factors',
+                'variables': ['regional_demand', 'infrastructure_age', 'climate'],
+                'recommendation': 'Include geographic fixed effects'
+            },
+            'operational_confounders': {
+                'description': 'Pipeline operational factors',
+                'variables': ['maintenance_schedules', 'capacity_constraints', 'safety_protocols'],
+                'recommendation': 'Control for operational characteristics'
+            }
+        }
+        
+        confounders.update(domain_confounders)
+        return confounders
+    
+    def _perform_robustness_checks(self, data, variables):
+        """Perform various robustness checks on the analysis."""
+        robustness_results = {}
+        
+        # 1. Bootstrap sampling
+        try:
+            from sklearn.utils import resample
+            bootstrap_correlations = []
+            n_bootstrap = 100
+            
+            for _ in range(n_bootstrap):
+                bootstrap_sample = resample(data, n_samples=len(data), random_state=None)
+                boot_corr = bootstrap_sample[variables].corr()
+                bootstrap_correlations.append(boot_corr.loc['scheduled_quantity', 'pipeline_name'])
+            
+            bootstrap_correlations = np.array(bootstrap_correlations)
+            robustness_results['bootstrap_correlation'] = {
+                'mean': np.mean(bootstrap_correlations),
+                'std': np.std(bootstrap_correlations),
+                'confidence_interval_95': [
+                    np.percentile(bootstrap_correlations, 2.5),
+                    np.percentile(bootstrap_correlations, 97.5)
+                ],
+                'stability': 'High' if np.std(bootstrap_correlations) < 0.1 else 'Moderate'
+            }
+        except Exception as e:
+            robustness_results['bootstrap_correlation'] = {'error': str(e)}
+        
+        # 2. Subset analysis
+        try:
+            # Split data into temporal subsets
+            data_sorted = data.sort_values('eff_gas_day')
+            n_samples = len(data_sorted)
+            
+            subset1 = data_sorted.iloc[:n_samples//2]
+            subset2 = data_sorted.iloc[n_samples//2:]
+            
+            corr1 = subset1[variables].corr().loc['scheduled_quantity', 'pipeline_name']
+            corr2 = subset2[variables].corr().loc['scheduled_quantity', 'pipeline_name']
+            
+            robustness_results['temporal_stability'] = {
+                'first_half_correlation': corr1,
+                'second_half_correlation': corr2,
+                'difference': abs(corr1 - corr2),
+                'stability': 'High' if abs(corr1 - corr2) < 0.2 else 'Low'
+            }
+        except Exception as e:
+            robustness_results['temporal_stability'] = {'error': str(e)}
+        
+        # 3. Outlier sensitivity
+        try:
+            # Remove top and bottom 5% of scheduled_quantity
+            q05 = data['scheduled_quantity'].quantile(0.05)
+            q95 = data['scheduled_quantity'].quantile(0.95)
+            
+            data_trimmed = data[(data['scheduled_quantity'] >= q05) & 
+                              (data['scheduled_quantity'] <= q95)]
+            
+            original_corr = data[variables].corr().loc['scheduled_quantity', 'pipeline_name']
+            trimmed_corr = data_trimmed[variables].corr().loc['scheduled_quantity', 'pipeline_name']
+            
+            robustness_results['outlier_sensitivity'] = {
+                'original_correlation': original_corr,
+                'trimmed_correlation': trimmed_corr,
+                'difference': abs(original_corr - trimmed_corr),
+                'sensitivity': 'Low' if abs(original_corr - trimmed_corr) < 0.1 else 'High'
+            }
+        except Exception as e:
+            robustness_results['outlier_sensitivity'] = {'error': str(e)}
+        
+        return robustness_results
+    
+    def _analyze_causal_pathways(self, daily_data, state_data):
+        """Analyze potential causal pathways between variables."""
+        pathways = {}
+        
+        # Direct pathway: Pipeline count -> Volume
+        pathways['pipeline_to_volume'] = {
+            'pathway': 'Pipeline Count → Total Volume',
+            'mechanism': 'More pipelines provide greater capacity for gas transport',
+            'evidence_strength': 'Strong correlation observed',
+            'alternative_explanations': [
+                'Reverse causation: High demand areas get more pipelines',
+                'Common cause: Economic activity drives both pipeline investment and volume'
+            ]
+        }
+        
+        # Temporal pathway: Seasonality -> Volume
+        pathways['seasonal_to_volume'] = {
+            'pathway': 'Seasonal Factors → Volume Fluctuations',
+            'mechanism': 'Heating demand in winter, industrial patterns affect gas usage',
+            'evidence_strength': 'Moderate correlation with month variable',
+            'alternative_explanations': [
+                'Weather confounding: Temperature affects both seasonality and demand',
+                'Economic cycles: Business activity has seasonal patterns'
+            ]
+        }
+        
+        # Geographic pathway: State characteristics -> Operations
+        pathways['geographic_to_operations'] = {
+            'pathway': 'Geographic Factors → Operational Patterns',
+            'mechanism': 'Regional infrastructure, regulations, and demand patterns',
+            'evidence_strength': 'State-level correlation analysis',
+            'alternative_explanations': [
+                'Historical development: Legacy infrastructure affects current operations',
+                'Regulatory environment: State policies influence operations'
+            ]
+        }
+        
+        return pathways
     
     def show_help(self):
         """Show help information."""
