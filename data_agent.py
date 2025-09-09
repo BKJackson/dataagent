@@ -1,0 +1,741 @@
+#!/usr/bin/env python3
+
+import os
+import sys
+import json
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+from pathlib import Path
+import warnings
+warnings.filterwarnings('ignore')
+
+# Data analysis libraries
+from sklearn.cluster import KMeans, DBSCAN
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+from sklearn.ensemble import IsolationForest
+from scipy import stats
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# LLM libraries
+import openai
+try:
+    import anthropic
+    HAS_ANTHROPIC = True
+except ImportError:
+    HAS_ANTHROPIC = False
+
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+from rich.prompt import Prompt
+from dotenv import load_dotenv
+
+from data_loader import DataLoader
+from visualization import DataVisualizer
+
+class DataAgent:
+    def __init__(self):
+        load_dotenv()
+        self.console = Console()
+        self.loader = DataLoader()
+        self.visualizer = DataVisualizer()
+        self.df = None
+        self.dataset_info = None
+        
+        # Initialize LLM clients
+        self.setup_llm_clients()
+        
+        # Analysis cache
+        self.analysis_cache = {}
+        
+    def setup_llm_clients(self):
+        """Setup LLM clients based on available API keys."""
+        self.openai_client = None
+        self.anthropic_client = None
+        
+        if os.getenv('OPENAI_API_KEY'):
+            openai.api_key = os.getenv('OPENAI_API_KEY')
+            self.openai_client = openai
+            self.console.print("✓ OpenAI client initialized", style="green")
+        
+        if os.getenv('ANTHROPIC_API_KEY') and HAS_ANTHROPIC:
+            self.anthropic_client = anthropic.Anthropic(api_key=os.getenv('ANTHROPIC_API_KEY'))
+            self.console.print("✓ Anthropic client initialized", style="green")
+        
+        if not self.openai_client and not self.anthropic_client:
+            self.console.print("⚠ No LLM API keys found. Set OPENAI_API_KEY or ANTHROPIC_API_KEY", style="yellow")
+    
+    def load_dataset(self, file_path=None):
+        """Load dataset from file path or Google Drive."""
+        if file_path:
+            self.df = self.loader.load_dataset_from_path(file_path)
+        else:
+            self.df = self.loader.load_dataset_from_drive()
+        
+        if self.df is not None:
+            self.dataset_info = self.loader.get_dataset_info(self.df)
+            self.console.print(f"✓ Dataset loaded: {self.df.shape[0]:,} rows, {self.df.shape[1]} columns", style="green")
+            
+            # Convert date column
+            if 'eff_gas_day' in self.df.columns:
+                self.df['eff_gas_day'] = pd.to_datetime(self.df['eff_gas_day'])
+            
+            return True
+        return False
+    
+    def get_llm_response(self, prompt, model_preference="openai"):
+        """Get response from available LLM."""
+        if model_preference == "openai" and self.openai_client:
+            try:
+                response = self.openai_client.chat.completions.create(
+                    model="gpt-4",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=2000,
+                    temperature=0.1
+                )
+                return response.choices[0].message.content
+            except Exception as e:
+                self.console.print(f"OpenAI error: {e}", style="red")
+        
+        if self.anthropic_client:
+            try:
+                response = self.anthropic_client.messages.create(
+                    model="claude-3-sonnet-20240229",
+                    max_tokens=2000,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                return response.content[0].text
+            except Exception as e:
+                self.console.print(f"Anthropic error: {e}", style="red")
+        
+        return "No LLM available. Please set API keys."
+    
+    def analyze_query(self, user_query):
+        """Analyze user query and determine analysis approach."""
+        analysis_prompt = f"""
+        Analyze this user query about a natural gas pipeline dataset and determine the best approach:
+        
+        Dataset Info:
+        - 23.8M rows of pipeline transaction data
+        - Columns: pipeline_name, loc_name, connecting_pipeline, connecting_entity, rec_del_sign, 
+          category_short, country_name, state_abb, county_name, eff_gas_day, scheduled_quantity
+        - Time period: 2022-2025 daily data
+        - rec_del_sign: -1 (receipt) vs 1 (delivery)
+        - scheduled_quantity: gas volume
+        
+        User Query: "{user_query}"
+        
+        Classify this query and suggest analysis approach:
+        1. Query Type: [simple_stats, time_series, geographic, pattern_detection, anomaly_detection, causal_analysis]
+        2. Required Columns: [list specific columns needed]
+        3. Filters Needed: [any data filtering required]
+        4. Analysis Method: [describe statistical/ML approach]
+        5. Expected Output: [what format to present results]
+        
+        Respond in JSON format.
+        """
+        
+        response = self.get_llm_response(analysis_prompt)
+        try:
+            return json.loads(response)
+        except:
+            # Fallback if JSON parsing fails
+            return {
+                "query_type": "simple_stats",
+                "required_columns": ["scheduled_quantity"],
+                "filters_needed": [],
+                "analysis_method": "descriptive statistics",
+                "expected_output": "summary table"
+            }
+    
+    def execute_simple_stats(self, query_analysis, user_query):
+        """Execute simple statistical queries."""
+        try:
+            # Basic statistics
+            results = {}
+            
+            # Dataset info queries
+            if any(word in user_query.lower() for word in ['column', 'field', 'variable', 'what are the']):
+                results['dataset_info'] = {
+                    'total_rows': len(self.df),
+                    'total_columns': len(self.df.columns),
+                    'column_names': list(self.df.columns),
+                    'data_types': {col: str(dtype) for col, dtype in self.df.dtypes.items()},
+                    'memory_usage_mb': round(self.df.memory_usage(deep=True).sum() / 1024 / 1024, 1)
+                }
+            
+            # Basic dataset overview
+            if any(word in user_query.lower() for word in ['overview', 'summary', 'describe', 'info']):
+                results['dataset_overview'] = {
+                    'shape': self.df.shape,
+                    'columns': list(self.df.columns),
+                    'date_range': {
+                        'start': str(self.df['eff_gas_day'].min()),
+                        'end': str(self.df['eff_gas_day'].max())
+                    },
+                    'unique_pipelines': self.df['pipeline_name'].nunique(),
+                    'unique_locations': self.df['loc_name'].nunique(),
+                    'states_covered': self.df['state_abb'].nunique()
+                }
+            
+            if 'scheduled_quantity' in query_analysis.get('required_columns', []):
+                quantity_stats = self.df['scheduled_quantity'].describe()
+                results['quantity_statistics'] = quantity_stats.to_dict()
+            
+            # Pipeline counts
+            if 'pipeline' in user_query.lower():
+                pipeline_counts = self.df['pipeline_name'].value_counts().head(10)
+                results['top_pipelines'] = pipeline_counts.to_dict()
+                
+                # Create visualization
+                try:
+                    plot_path = self.visualizer.plot_top_pipelines(self.df)
+                    results['visualization'] = plot_path
+                except Exception as e:
+                    results['viz_error'] = str(e)
+            
+            # State analysis
+            if 'state' in user_query.lower():
+                state_counts = self.df['state_abb'].value_counts().head(10)
+                results['top_states'] = state_counts.to_dict()
+                
+                # Create visualization
+                try:
+                    plot_path = self.visualizer.plot_state_distribution(self.df)
+                    results['visualization'] = plot_path
+                except Exception as e:
+                    results['viz_error'] = str(e)
+            
+            # If no specific analysis was triggered, provide basic info
+            if not results:
+                results['basic_info'] = {
+                    'total_records': len(self.df),
+                    'columns': list(self.df.columns),
+                    'sample_data': self.df.head(3).to_dict('records')
+                }
+            
+            return results
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def execute_time_series_analysis(self, query_analysis, user_query):
+        """Execute time series analysis."""
+        try:
+            results = {}
+            
+            # Daily volume trends
+            daily_volume = self.df.groupby('eff_gas_day')['scheduled_quantity'].agg([
+                'sum', 'mean', 'count'
+            ]).reset_index()
+            
+            # Recent trends
+            recent_data = daily_volume.tail(30)
+            results['recent_daily_volumes'] = recent_data.to_dict('records')
+            
+            # Monthly aggregation
+            monthly_volume = self.df.copy()
+            monthly_volume['year_month'] = monthly_volume['eff_gas_day'].dt.to_period('M')
+            monthly_stats = monthly_volume.groupby('year_month')['scheduled_quantity'].agg([
+                'sum', 'mean', 'count'
+            ]).reset_index()
+            
+            results['monthly_trends'] = monthly_stats.tail(12).to_dict('records')
+            
+            # Seasonal patterns
+            self.df['month'] = self.df['eff_gas_day'].dt.month
+            seasonal = self.df.groupby('month')['scheduled_quantity'].mean()
+            results['seasonal_patterns'] = seasonal.to_dict()
+            
+            # Create visualizations
+            try:
+                if 'trend' in user_query.lower():
+                    plot_path = self.visualizer.plot_monthly_trends(self.df)
+                    results['visualization'] = plot_path
+                elif 'seasonal' in user_query.lower():
+                    plot_path = self.visualizer.plot_seasonal_patterns(self.df)
+                    results['visualization'] = plot_path
+            except Exception as e:
+                results['viz_error'] = str(e)
+            
+            return results
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def execute_geographic_analysis(self, query_analysis, user_query):
+        """Execute geographic analysis."""
+        try:
+            results = {}
+            
+            # State-level analysis
+            state_analysis = self.df.groupby('state_abb').agg({
+                'scheduled_quantity': ['sum', 'mean', 'count'],
+                'pipeline_name': 'nunique',
+                'loc_name': 'nunique'
+            }).round(2)
+            
+            state_analysis.columns = ['total_volume', 'avg_volume', 'transaction_count', 'pipeline_count', 'location_count']
+            results['state_analysis'] = state_analysis.head(15).to_dict('index')
+            
+            # County analysis (top counties by volume)
+            county_analysis = self.df.groupby(['state_abb', 'county_name'])['scheduled_quantity'].agg([
+                'sum', 'count'
+            ]).reset_index().sort_values('sum', ascending=False)
+            
+            results['top_counties'] = county_analysis.head(10).to_dict('records')
+            
+            # Create visualization
+            try:
+                plot_path = self.visualizer.plot_state_distribution(self.df)
+                results['visualization'] = plot_path
+            except Exception as e:
+                results['viz_error'] = str(e)
+            
+            return results
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def execute_pattern_detection(self, query_analysis, user_query):
+        """Execute pattern detection using clustering."""
+        try:
+            results = {}
+            
+            # Prepare data for clustering
+            # Group by pipeline and location for pattern analysis
+            pattern_data = self.df.groupby(['pipeline_name', 'loc_name']).agg({
+                'scheduled_quantity': ['sum', 'mean', 'std', 'count'],
+                'rec_del_sign': 'mean'  # Receipt/delivery ratio
+            }).round(2)
+            
+            pattern_data.columns = ['total_volume', 'avg_volume', 'volume_std', 'transaction_count', 'rec_del_ratio']
+            pattern_data = pattern_data.fillna(0)
+            
+            # Select features for clustering
+            features = ['total_volume', 'avg_volume', 'volume_std', 'transaction_count']
+            X = pattern_data[features]
+            
+            # Normalize features
+            scaler = StandardScaler()
+            X_scaled = scaler.fit_transform(X)
+            
+            # K-means clustering
+            kmeans = KMeans(n_clusters=5, random_state=42)
+            clusters = kmeans.fit_predict(X_scaled)
+            pattern_data['cluster'] = clusters
+            
+            # Analyze clusters
+            cluster_summary = pattern_data.groupby('cluster').agg({
+                'total_volume': ['mean', 'count'],
+                'avg_volume': 'mean',
+                'transaction_count': 'mean'
+            }).round(2)
+            
+            results['cluster_patterns'] = cluster_summary.to_dict('index')
+            
+            # Top locations in each cluster
+            for cluster_id in range(5):
+                cluster_data = pattern_data[pattern_data['cluster'] == cluster_id]
+                top_locations = cluster_data.nlargest(5, 'total_volume')
+                results[f'cluster_{cluster_id}_top_locations'] = top_locations.index.tolist()
+            
+            return results
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def execute_anomaly_detection(self, query_analysis, user_query):
+        """Execute anomaly detection."""
+        try:
+            results = {}
+            
+            # Daily volume anomalies
+            daily_volumes = self.df.groupby('eff_gas_day')['scheduled_quantity'].sum().reset_index()
+            
+            # Statistical anomaly detection (Z-score)
+            daily_volumes['z_score'] = np.abs(stats.zscore(daily_volumes['scheduled_quantity']))
+            statistical_anomalies = daily_volumes[daily_volumes['z_score'] > 3]
+            
+            results['daily_volume_anomalies'] = statistical_anomalies.to_dict('records')
+            
+            # Pipeline-level anomalies
+            pipeline_stats = self.df.groupby('pipeline_name')['scheduled_quantity'].agg([
+                'sum', 'mean', 'std', 'count'
+            ]).fillna(0)
+            
+            # Isolation Forest for pipeline anomalies
+            if len(pipeline_stats) > 10:
+                features = ['sum', 'mean', 'count']
+                isolation_forest = IsolationForest(contamination=0.1, random_state=42)
+                anomaly_scores = isolation_forest.fit_predict(pipeline_stats[features])
+                
+                anomalous_pipelines = pipeline_stats[anomaly_scores == -1]
+                results['anomalous_pipelines'] = anomalous_pipelines.to_dict('index')
+            
+            # Transaction-level anomalies (very high/low volumes)
+            volume_percentiles = self.df['scheduled_quantity'].quantile([0.01, 0.99])
+            extreme_transactions = self.df[
+                (self.df['scheduled_quantity'] < volume_percentiles[0.01]) |
+                (self.df['scheduled_quantity'] > volume_percentiles[0.99])
+            ]
+            
+            results['extreme_transactions'] = {
+                'count': len(extreme_transactions),
+                'very_low_threshold': volume_percentiles[0.01],
+                'very_high_threshold': volume_percentiles[0.99],
+                'sample_high_volume': extreme_transactions.nlargest(5, 'scheduled_quantity')[
+                    ['pipeline_name', 'loc_name', 'scheduled_quantity', 'eff_gas_day']
+                ].to_dict('records')
+            }
+            
+            # Create visualization
+            try:
+                plot_path = self.visualizer.plot_anomaly_detection(self.df)
+                results['visualization'] = plot_path
+            except Exception as e:
+                results['viz_error'] = str(e)
+            
+            return results
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def execute_causal_analysis(self, query_analysis, user_query):
+        """Execute causal analysis with caveats."""
+        try:
+            results = {}
+            results['caution'] = "Causal analysis requires careful interpretation. These are correlational findings."
+            
+            # Temporal correlations
+            daily_data = self.df.groupby('eff_gas_day').agg({
+                'scheduled_quantity': 'sum',
+                'rec_del_sign': 'mean',  # Receipt/delivery balance
+                'pipeline_name': 'nunique'  # Active pipelines
+            }).reset_index()
+            
+            # Add day of week and month features
+            daily_data['day_of_week'] = daily_data['eff_gas_day'].dt.dayofweek
+            daily_data['month'] = daily_data['eff_gas_day'].dt.month
+            
+            # Correlations
+            correlations = daily_data[['scheduled_quantity', 'rec_del_sign', 'pipeline_name', 'day_of_week', 'month']].corr()
+            results['temporal_correlations'] = correlations.to_dict('index')
+            
+            # State-level patterns
+            state_patterns = self.df.groupby('state_abb').agg({
+                'scheduled_quantity': ['sum', 'mean'],
+                'pipeline_name': 'nunique',
+                'loc_name': 'nunique'
+            })
+            
+            state_patterns.columns = ['total_volume', 'avg_volume', 'pipeline_count', 'location_count']
+            
+            # Find potential relationships
+            state_corr = state_patterns.corr()
+            results['state_level_correlations'] = state_corr.to_dict('index')
+            
+            # Hypothesis generation
+            results['potential_relationships'] = [
+                "Higher pipeline diversity (more pipelines) may correlate with higher total volumes",
+                "Receipt/delivery balance might indicate regional supply/demand patterns",
+                "Seasonal patterns (month) may influence volume patterns",
+                "Geographic concentration of locations may indicate infrastructure hubs"
+            ]
+            
+            return results
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def process_query(self, user_query):
+        """Main query processing function."""
+        if self.df is None:
+            return "Please load a dataset first using load_dataset()."
+        
+        self.console.print(f"\n🔍 Analyzing query: {user_query}", style="blue")
+        
+        # Analyze query with LLM
+        query_analysis = self.analyze_query(user_query)
+        
+        # Execute appropriate analysis
+        query_type = query_analysis.get('query_type', 'simple_stats')
+        
+        if query_type == 'simple_stats':
+            results = self.execute_simple_stats(query_analysis, user_query)
+        elif query_type == 'time_series':
+            results = self.execute_time_series_analysis(query_analysis, user_query)
+        elif query_type == 'geographic':
+            results = self.execute_geographic_analysis(query_analysis, user_query)
+        elif query_type == 'pattern_detection':
+            results = self.execute_pattern_detection(query_analysis, user_query)
+        elif query_type == 'anomaly_detection':
+            results = self.execute_anomaly_detection(query_analysis, user_query)
+        elif query_type == 'causal_analysis':
+            results = self.execute_causal_analysis(query_analysis, user_query)
+        else:
+            results = self.execute_simple_stats(query_analysis, user_query)
+        
+        # Generate LLM interpretation
+        interpretation_prompt = f"""
+        Provide a clear, concise interpretation of these analysis results for a natural gas pipeline dataset:
+        
+        User Query: "{user_query}"
+        Analysis Type: {query_type}
+        Results: {json.dumps(results, indent=2, default=str)}
+        
+        Provide:
+        1. Key findings (3-5 bullet points)
+        2. Supporting evidence from the data
+        3. Limitations and caveats
+        4. Actionable insights if applicable
+        
+        Keep response under 300 words and focus on business relevance.
+        """
+        
+        interpretation = self.get_llm_response(interpretation_prompt)
+        
+        return {
+            'query': user_query,
+            'analysis_type': query_type,
+            'results': results,
+            'interpretation': interpretation,
+            'timestamp': datetime.now().isoformat()
+        }
+    
+    def run_interactive_mode(self):
+        """Run interactive chat mode."""
+        self.console.print("\n🚀 Data Agent Interactive Mode", style="bold green")
+        self.console.print("Type 'exit' to quit, 'help' for commands\n")
+        
+        if not self.load_dataset():
+            self.console.print("Failed to load dataset. Please check your connection.", style="red")
+            return
+        
+        while True:
+            try:
+                user_input = Prompt.ask("\n[bold blue]Your question[/bold blue]")
+                
+                if user_input.lower() in ['exit', 'quit']:
+                    self.console.print("Goodbye! 👋", style="green")
+                    break
+                elif user_input.lower() == 'help':
+                    self.show_help()
+                    continue
+                
+                # Process query
+                response = self.process_query(user_input)
+                
+                # Display results
+                self.display_response(response)
+                
+            except KeyboardInterrupt:
+                self.console.print("\n\nGoodbye! 👋", style="green")
+                break
+            except Exception as e:
+                self.console.print(f"Error: {e}", style="red")
+    
+    def display_response(self, response):
+        """Display formatted response."""
+        # Create results panel
+        interpretation = response.get('interpretation', 'No interpretation available')
+        
+        panel = Panel(
+            interpretation,
+            title=f"Analysis: {response['analysis_type']}",
+            border_style="green"
+        )
+        
+        self.console.print(panel)
+        
+        # Show visualization info if available
+        results = response.get('results', {})
+        if 'visualization' in results:
+            self.show_visualization_info(results['visualization'], response.get('analysis_type', 'unknown'))
+        
+        # Show key metrics if available
+        if isinstance(results, dict) and results:
+            table = Table(title="Key Metrics")
+            table.add_column("Metric", style="cyan")
+            table.add_column("Value", style="green")
+            
+            for key, value in list(results.items())[:10]:  # Show first 10 items
+                if key in ['visualization', 'viz_error']:  # Skip visualization paths in table
+                    continue
+                if isinstance(value, (int, float)):
+                    table.add_row(str(key), f"{value:,.2f}" if isinstance(value, float) else f"{value:,}")
+                elif isinstance(value, dict) and len(value) < 5:
+                    table.add_row(str(key), str(value))
+            
+            if table.rows:
+                self.console.print(table)
+    
+    def show_visualization_info(self, plot_path, analysis_type):
+        """Show detailed information about the generated visualization."""
+        plot_name = plot_path.split('/')[-1].replace('.png', '')
+        
+        # Create visualization info panel
+        viz_info = f"📊 [bold green]Visualization Generated![/bold green]\n\n"
+        viz_info += f"[bold cyan]📁 File Location:[/bold cyan] {plot_path}\n"
+        viz_info += f"[bold cyan]💻 View Command:[/bold cyan] open {plot_path}\n\n"
+        
+        # Add chart-specific interpretation guidance
+        if 'top_pipelines' in plot_name:
+            viz_info += f"[bold yellow]📈 Chart Type:[/bold yellow] Bar Chart - Top Pipelines by Volume\n\n"
+            viz_info += f"[bold blue]How to Read:[/bold blue]\n"
+            viz_info += f"• Vertical bars show total gas volume for each pipeline company\n"
+            viz_info += f"• Height = volume (in billions of cubic feet)\n"
+            viz_info += f"• Companies ordered from highest to lowest volume\n"
+            viz_info += f"• Values labeled on top of each bar\n\n"
+            viz_info += f"[bold magenta]Key Insights:[/bold magenta]\n"
+            viz_info += f"• Identify market leaders and their relative market share\n"
+            viz_info += f"• Spot significant gaps between top performers\n"
+            viz_info += f"• Use for competitive analysis and partnership decisions"
+            
+        elif 'state_distribution' in plot_name:
+            viz_info += f"[bold yellow]📈 Chart Type:[/bold yellow] Horizontal Bar Chart - Geographic Distribution\n\n"
+            viz_info += f"[bold blue]How to Read:[/bold blue]\n"
+            viz_info += f"• Horizontal bars show transaction count by state\n"
+            viz_info += f"• Length = number of pipeline transactions\n"
+            viz_info += f"• States ordered from most to least active\n"
+            viz_info += f"• Values shown at the end of each bar\n\n"
+            viz_info += f"[bold magenta]Key Insights:[/bold magenta]\n"
+            viz_info += f"• Identify states with highest pipeline activity\n"
+            viz_info += f"• Understand geographic concentration of operations\n"
+            viz_info += f"• Guide regional expansion and resource allocation"
+            
+        elif 'monthly_trends' in plot_name:
+            viz_info += f"[bold yellow]📈 Chart Type:[/bold yellow] Line Plot - Time Series Trends\n\n"
+            viz_info += f"[bold blue]How to Read:[/bold blue]\n"
+            viz_info += f"• Two panels: Total Volume (top) and Transaction Count (bottom)\n"
+            viz_info += f"• X-axis shows months over time\n"
+            viz_info += f"• Y-axis shows volume (billions) or transactions (millions)\n"
+            viz_info += f"• Line trends show patterns over time\n\n"
+            viz_info += f"[bold magenta]Key Insights:[/bold magenta]\n"
+            viz_info += f"• Identify seasonal patterns and cyclical trends\n"
+            viz_info += f"• Spot growth or decline in activity over time\n"
+            viz_info += f"• Plan capacity and maintenance around peak periods"
+            
+        elif 'seasonal_patterns' in plot_name:
+            viz_info += f"[bold yellow]📈 Chart Type:[/bold yellow] Multi-Panel Seasonal Analysis\n\n"
+            viz_info += f"[bold blue]How to Read:[/bold blue]\n"
+            viz_info += f"• Four panels: Monthly, Day-of-Week, Quarterly, Receipt vs Delivery\n"
+            viz_info += f"• Bar heights show average volumes for each time period\n"
+            viz_info += f"• Colors help distinguish different categories\n"
+            viz_info += f"• Bottom-right shows receipt vs delivery balance\n\n"
+            viz_info += f"[bold magenta]Key Insights:[/bold magenta]\n"
+            viz_info += f"• Understand seasonal demand patterns (winter vs summer)\n"
+            viz_info += f"• Identify operational rhythms (weekday vs weekend)\n"
+            viz_info += f"• Balance supply and demand planning"
+            
+        elif 'category_distribution' in plot_name:
+            viz_info += f"[bold yellow]📈 Chart Type:[/bold yellow] Pie Chart - Category Distribution\n\n"
+            viz_info += f"[bold blue]How to Read:[/bold blue]\n"
+            viz_info += f"• Pie slices represent different pipeline categories\n"
+            viz_info += f"• Size = proportion of total transactions\n"
+            viz_info += f"• Legend shows category names with counts and percentages\n"
+            viz_info += f"• Small categories grouped into 'Others' to avoid clutter\n\n"
+            viz_info += f"[bold magenta]Key Insights:[/bold magenta]\n"
+            viz_info += f"• See breakdown of pipeline operation types\n"
+            viz_info += f"• Identify dominant categories (LDC, Industrial, etc.)\n"
+            viz_info += f"• Understand business mix and customer segments"
+            
+        elif 'volume_distribution' in plot_name:
+            viz_info += f"[bold yellow]📈 Chart Type:[/bold yellow] Dual Histogram - Volume Distribution\n\n"
+            viz_info += f"[bold blue]How to Read:[/bold blue]\n"
+            viz_info += f"• Left panel: ALL transactions (including zeros)\n"
+            viz_info += f"• Right panel: SUBSTANTIAL transactions only (>10 cubic feet)\n"
+            viz_info += f"• Y-axis uses log scale (each line = 10x the previous)\n"
+            viz_info += f"• Red/orange lines show mean and median values\n\n"
+            viz_info += f"[bold magenta]Key Insights:[/bold magenta]\n"
+            viz_info += f"• Left shows data composition (administrative vs operational)\n"
+            viz_info += f"• Right shows real business transaction patterns\n"
+            viz_info += f"• Understand the 'long tail' of pipeline operations"
+            
+        elif 'anomaly_detection' in plot_name:
+            viz_info += f"[bold yellow]📈 Chart Type:[/bold yellow] Scatter Plot - Anomaly Detection\n\n"
+            viz_info += f"[bold blue]How to Read:[/bold blue]\n"
+            viz_info += f"• Blue dots = normal daily volumes\n"
+            viz_info += f"• Red X marks = anomalies (Z-score > 3)\n"
+            viz_info += f"• X-axis shows dates, Y-axis shows daily volume\n"
+            viz_info += f"• Anomalies are statistically unusual (>99.7% confidence)\n\n"
+            viz_info += f"[bold magenta]Key Insights:[/bold magenta]\n"
+            viz_info += f"• Identify days with unusual volume spikes or drops\n"
+            viz_info += f"• Investigate potential operational issues or market events\n"
+            viz_info += f"• Monitor system performance and data quality"
+            
+        elif 'correlation_heatmap' in plot_name:
+            viz_info += f"[bold yellow]📈 Chart Type:[/bold yellow] Correlation Heatmap\n\n"
+            viz_info += f"[bold blue]How to Read:[/bold blue]\n"
+            viz_info += f"• Grid shows correlation between all variable pairs\n"
+            viz_info += f"• Colors: Red = positive correlation, Blue = negative\n"
+            viz_info += f"• Numbers show correlation strength (-1 to +1)\n"
+            viz_info += f"• Diagonal always shows 1.0 (perfect self-correlation)\n\n"
+            viz_info += f"[bold magenta]Key Insights:[/bold magenta]\n"
+            viz_info += f"• Find variables that move together (positive correlation)\n"
+            viz_info += f"• Identify inverse relationships (negative correlation)\n"
+            viz_info += f"• Understand seasonal and operational patterns"
+            
+        else:
+            viz_info += f"[bold yellow]📈 Chart Type:[/bold yellow] Custom Analysis Visualization\n\n"
+            viz_info += f"[bold blue]How to Read:[/bold blue]\n"
+            viz_info += f"• Refer to axis labels and legend for specific guidance\n"
+            viz_info += f"• Look for patterns, trends, and outliers\n"
+            viz_info += f"• Consider the business context of your query\n\n"
+            viz_info += f"[bold magenta]Key Insights:[/bold magenta]\n"
+            viz_info += f"• Use visualization to validate findings from the analysis\n"
+            viz_info += f"• Look for unexpected patterns or anomalies\n"
+            viz_info += f"• Consider implications for business decisions"
+        
+        viz_info += f"\n\n[bold green]💡 Pro Tip:[/bold green] Use 'open {plot_path}' to view the chart, or include it in presentations and reports!"
+        
+        # Create and display the panel
+        viz_panel = Panel(
+            viz_info,
+            title="📊 Visualization Guide",
+            border_style="green",
+            padding=(1, 2)
+        )
+        
+        self.console.print(viz_panel)
+    
+    def show_help(self):
+        """Show help information."""
+        help_text = """
+        [bold]Available Query Types:[/bold]
+        
+        📊 [blue]Simple Statistics[/blue]: "What's the average gas volume?" "How many pipelines?"
+        📈 [blue]Time Series[/blue]: "Show trends over time" "What are the seasonal patterns?"
+        🗺️  [blue]Geographic[/blue]: "Which states have highest volume?" "Top counties by activity?"
+        🔍 [blue]Pattern Detection[/blue]: "Find patterns in pipeline operations" "Cluster similar locations"
+        🚨 [blue]Anomaly Detection[/blue]: "Find unusual volumes" "Detect outliers"
+        🔗 [blue]Causal Analysis[/blue]: "What factors influence volume?" "Correlations between variables"
+        
+        [bold]Example Queries:[/bold]
+        • "What are the top 10 pipelines by volume?"
+        • "Show me seasonal patterns in gas delivery"
+        • "Find anomalies in daily gas volumes"
+        • "Which states have the most pipeline activity?"
+        • "Detect patterns in pipeline operations"
+        """
+        
+        self.console.print(Panel(help_text, title="Help", border_style="blue"))
+
+if __name__ == "__main__":
+    agent = DataAgent()
+    
+    if len(sys.argv) > 1 and sys.argv[1] == "--query":
+        # Single query mode
+        if len(sys.argv) > 2:
+            query = " ".join(sys.argv[2:])
+            if agent.load_dataset():
+                response = agent.process_query(query)
+                agent.display_response(response)
+        else:
+            print("Usage: python data_agent.py --query 'Your question here'")
+    else:
+        # Interactive mode
+        agent.run_interactive_mode() 
