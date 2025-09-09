@@ -807,43 +807,118 @@ class DataAgent:
                 self.console.print(f"Error: {e}", style="red")
     
     def display_response(self, response):
-        """Display formatted response."""
-        # Create results panel
-        interpretation = response.get('interpretation', 'No interpretation available')
+        """Display formatted response with prominent data results."""
+        results = response.get('results', {})
         
+        # FIRST: Show the actual data results prominently
+        self._display_core_results(results, response.get('query', 'Query'))
+        
+        # SECOND: Show visualization info if available
+        if 'visualization' in results:
+            self.show_visualization_info(results['visualization'], response.get('analysis_type', 'unknown'))
+        
+        # THIRD: Show methods used if available
+        if 'methods_used' in results:
+            self.show_methods_used(results['methods_used'])
+        
+        # FOURTH: Show LLM interpretation
+        interpretation = response.get('interpretation', 'No interpretation available')
         panel = Panel(
             interpretation,
             title=f"Analysis: {response['analysis_type']}",
             border_style="green"
         )
-        
         self.console.print(panel)
+    
+    def _display_core_results(self, results, query):
+        """Display the core data results prominently."""
+        if not results or 'error' in results:
+            self.console.print("❌ No results available or error occurred", style="red")
+            return
         
-        # Show visualization info if available
-        results = response.get('results', {})
-        if 'visualization' in results:
-            self.show_visualization_info(results['visualization'], response.get('analysis_type', 'unknown'))
+        # Create main results display
+        results_text = f"🎯 [bold green]ANSWER TO YOUR QUERY[/bold green]\n"
+        results_text += f"[dim]Query: {query}[/dim]\n\n"
         
-        # Show methods used if available
-        if 'methods_used' in results:
-            self.show_methods_used(results['methods_used'])
+        # Handle different result types
+        if 'dataset_info' in results:
+            info = results['dataset_info']
+            results_text += f"📊 [bold cyan]Dataset Overview:[/bold cyan]\n"
+            results_text += f"   • Total Rows: {info.get('total_rows', 'Unknown'):,}\n"
+            results_text += f"   • Total Columns: {info.get('total_columns', 'Unknown')}\n"
+            if 'column_names' in info:
+                results_text += f"   • Column Names: {', '.join(info['column_names'])}\n"
         
-        # Show key metrics if available
-        if isinstance(results, dict) and results:
-            table = Table(title="Key Metrics")
-            table.add_column("Metric", style="cyan")
-            table.add_column("Value", style="green")
-            
-            for key, value in list(results.items())[:10]:  # Show first 10 items
-                if key in ['visualization', 'viz_error', 'methods_used']:  # Skip visualization paths and methods in table
-                    continue
-                if isinstance(value, (int, float)):
-                    table.add_row(str(key), f"{value:,.2f}" if isinstance(value, float) else f"{value:,}")
-                elif isinstance(value, dict) and len(value) < 5:
-                    table.add_row(str(key), str(value))
-            
-            if table.rows:
-                self.console.print(table)
+        if 'top_pipelines' in results:
+            results_text += f"🏆 [bold cyan]Top Pipelines by Volume:[/bold cyan]\n"
+            for i, (pipeline, volume) in enumerate(results['top_pipelines'].items(), 1):
+                results_text += f"   {i}. {pipeline}: {volume:,.0f} cubic feet\n"
+        
+        if 'top_states' in results:
+            results_text += f"🗺️ [bold cyan]Top States by Activity:[/bold cyan]\n"
+            for i, (state, count) in enumerate(results['top_states'].items(), 1):
+                results_text += f"   {i}. {state}: {count:,} transactions\n"
+        
+        if 'summary_stats' in results:
+            stats = results['summary_stats']
+            results_text += f"📈 [bold cyan]Key Statistics:[/bold cyan]\n"
+            if 'mean' in stats:
+                results_text += f"   • Average Volume: {stats['mean']:,.0f} cubic feet\n"
+            if 'median' in stats:
+                results_text += f"   • Median Volume: {stats['median']:,.0f} cubic feet\n"
+            if 'total' in stats:
+                results_text += f"   • Total Volume: {stats['total']:,.0f} cubic feet\n"
+        
+        if 'geographic_analysis' in results:
+            geo = results['geographic_analysis']
+            results_text += f"🌍 [bold cyan]Geographic Insights:[/bold cyan]\n"
+            if 'top_states' in geo:
+                results_text += f"   • Most Active States: {', '.join(list(geo['top_states'].keys())[:3])}\n"
+            if 'state_count' in geo:
+                results_text += f"   • States with Activity: {geo['state_count']}\n"
+        
+        if 'time_series' in results:
+            ts = results['time_series']
+            results_text += f"📅 [bold cyan]Temporal Patterns:[/bold cyan]\n"
+            if 'trend' in ts:
+                results_text += f"   • Overall Trend: {ts['trend']}\n"
+            if 'seasonal_pattern' in ts:
+                results_text += f"   • Seasonal Pattern: {ts['seasonal_pattern']}\n"
+        
+        if 'anomaly_scores' in results:
+            anomalies = results['anomaly_scores']
+            results_text += f"⚠️ [bold cyan]Anomalies Detected:[/bold cyan]\n"
+            results_text += f"   • Total Anomalies: {len(anomalies)} data points\n"
+            if anomalies:
+                results_text += f"   • Severity Range: {min(anomalies):.2f} to {max(anomalies):.2f}\n"
+        
+        if 'causal_hypotheses' in results:
+            hypotheses = results['causal_hypotheses']
+            results_text += f"🔗 [bold cyan]Key Causal Relationships:[/bold cyan]\n"
+            for i, hyp in enumerate(hypotheses[:3], 1):  # Show top 3
+                results_text += f"   {i}. {hyp['hypothesis']}\n"
+                results_text += f"      Evidence: {hyp['evidence']}\n"
+        
+        # If no specific results found, show general metrics
+        if results_text == f"🎯 [bold green]ANSWER TO YOUR QUERY[/bold green]\n[dim]Query: {query}[/dim]\n\n":
+            results_text += f"📋 [bold cyan]Analysis Results:[/bold cyan]\n"
+            for key, value in list(results.items())[:5]:
+                if key not in ['visualization', 'viz_error', 'methods_used', 'error']:
+                    if isinstance(value, (int, float)):
+                        results_text += f"   • {key.replace('_', ' ').title()}: {value:,.2f}\n"
+                    elif isinstance(value, str) and len(value) < 100:
+                        results_text += f"   • {key.replace('_', ' ').title()}: {value}\n"
+                    elif isinstance(value, dict) and len(value) < 5:
+                        results_text += f"   • {key.replace('_', ' ').title()}: {str(value)[:100]}...\n"
+        
+        # Display the results panel
+        results_panel = Panel(
+            results_text,
+            title="🎯 CORE RESULTS",
+            border_style="bright_green",
+            padding=(1, 2)
+        )
+        self.console.print(results_panel)
     
     def show_visualization_info(self, plot_path, analysis_type):
         """Show detailed information about the generated visualization."""
