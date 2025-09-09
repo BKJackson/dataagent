@@ -83,14 +83,20 @@ python data_agent.py --query "Identify unusual patterns in gas delivery timing"
 ## 🔗 Causal Analysis
 
 ```bash
-# Volume correlations
+# Enhanced causal analysis with confounder detection
+python data_agent.py --query "What factors cause high gas volumes and what confounders should I consider?"
+
+# Robustness testing
+python data_agent.py --query "Analyze causal relationships between pipeline characteristics and volumes with robustness checks"
+
+# Volume correlations with pathway analysis
 python data_agent.py --query "What factors are correlated with high gas pipeline utilization?"
 
 # Geographic correlations
 python data_agent.py --query "How do geographic factors influence pipeline operations?"
 
-# Temporal correlations
-python data_agent.py --query "What seasonal factors affect gas pipeline demand?"
+# Temporal correlations with confounders
+python data_agent.py --query "What seasonal factors affect gas pipeline demand and what confounds these relationships?"
 ```
 
 ## 💡 Business Intelligence Queries
