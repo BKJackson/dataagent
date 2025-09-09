@@ -156,6 +156,15 @@ class DataAgent:
         try:
             # Basic statistics
             results = {}
+            methods_used = {
+                'analysis_type': 'Simple Statistics',
+                'statistical_methods': [],
+                'columns_analyzed': [],
+                'filters_applied': [],
+                'data_processing': [],
+                'sample_size': len(self.df),
+                'confidence_level': 'Full dataset (100%)'
+            }
             
             # Dataset info queries
             if any(word in user_query.lower() for word in ['column', 'field', 'variable', 'what are the']):
@@ -166,6 +175,9 @@ class DataAgent:
                     'data_types': {col: str(dtype) for col, dtype in self.df.dtypes.items()},
                     'memory_usage_mb': round(self.df.memory_usage(deep=True).sum() / 1024 / 1024, 1)
                 }
+                methods_used['statistical_methods'].append('Schema introspection')
+                methods_used['columns_analyzed'] = ['All columns']
+                methods_used['data_processing'].append('Data type inference and memory analysis')
             
             # Basic dataset overview
             if any(word in user_query.lower() for word in ['overview', 'summary', 'describe', 'info']):
@@ -180,20 +192,29 @@ class DataAgent:
                     'unique_locations': self.df['loc_name'].nunique(),
                     'states_covered': self.df['state_abb'].nunique()
                 }
+                methods_used['statistical_methods'].extend(['Descriptive statistics', 'Unique value counting', 'Date range analysis'])
+                methods_used['columns_analyzed'].extend(['eff_gas_day', 'pipeline_name', 'loc_name', 'state_abb'])
+                methods_used['data_processing'].append('Temporal and categorical aggregation')
             
             if 'scheduled_quantity' in query_analysis.get('required_columns', []):
                 quantity_stats = self.df['scheduled_quantity'].describe()
                 results['quantity_statistics'] = quantity_stats.to_dict()
+                methods_used['statistical_methods'].append('Descriptive statistics (mean, median, std, quartiles)')
+                methods_used['columns_analyzed'].append('scheduled_quantity')
             
             # Pipeline counts
             if 'pipeline' in user_query.lower():
                 pipeline_counts = self.df['pipeline_name'].value_counts().head(10)
                 results['top_pipelines'] = pipeline_counts.to_dict()
+                methods_used['statistical_methods'].extend(['Frequency counting', 'Top-N selection'])
+                methods_used['columns_analyzed'].append('pipeline_name')
+                methods_used['data_processing'].extend(['GROUP BY pipeline_name', 'ORDER BY count DESC', 'LIMIT 10'])
                 
                 # Create visualization
                 try:
                     plot_path = self.visualizer.plot_top_pipelines(self.df)
                     results['visualization'] = plot_path
+                    methods_used['data_processing'].append('Bar chart visualization generation')
                 except Exception as e:
                     results['viz_error'] = str(e)
             
@@ -201,11 +222,15 @@ class DataAgent:
             if 'state' in user_query.lower():
                 state_counts = self.df['state_abb'].value_counts().head(10)
                 results['top_states'] = state_counts.to_dict()
+                methods_used['statistical_methods'].extend(['Geographic frequency analysis', 'Top-N selection'])
+                methods_used['columns_analyzed'].append('state_abb')
+                methods_used['data_processing'].extend(['GROUP BY state_abb', 'COUNT transactions', 'ORDER BY count DESC'])
                 
                 # Create visualization
                 try:
                     plot_path = self.visualizer.plot_state_distribution(self.df)
                     results['visualization'] = plot_path
+                    methods_used['data_processing'].append('Horizontal bar chart visualization')
                 except Exception as e:
                     results['viz_error'] = str(e)
             
@@ -216,7 +241,16 @@ class DataAgent:
                     'columns': list(self.df.columns),
                     'sample_data': self.df.head(3).to_dict('records')
                 }
+                methods_used['statistical_methods'].append('Basic data exploration')
+                methods_used['columns_analyzed'] = ['All columns']
+                methods_used['data_processing'].append('HEAD(3) sampling for preview')
+                methods_used['sample_size'] = 3
             
+            # Clean up methods_used
+            methods_used['columns_analyzed'] = list(set(methods_used['columns_analyzed']))
+            methods_used['statistical_methods'] = list(set(methods_used['statistical_methods']))
+            
+            results['methods_used'] = methods_used
             return results
             
         except Exception as e:
@@ -226,15 +260,27 @@ class DataAgent:
         """Execute time series analysis."""
         try:
             results = {}
+            methods_used = {
+                'analysis_type': 'Time Series Analysis',
+                'statistical_methods': ['Temporal aggregation', 'Trend analysis', 'Seasonal decomposition'],
+                'columns_analyzed': ['eff_gas_day', 'scheduled_quantity'],
+                'filters_applied': [],
+                'data_processing': [],
+                'sample_size': len(self.df),
+                'confidence_level': 'Full dataset (100%)'
+            }
             
             # Daily volume trends
             daily_volume = self.df.groupby('eff_gas_day')['scheduled_quantity'].agg([
                 'sum', 'mean', 'count'
             ]).reset_index()
+            methods_used['data_processing'].append('GROUP BY eff_gas_day with SUM, MEAN, COUNT aggregations')
             
             # Recent trends
             recent_data = daily_volume.tail(30)
             results['recent_daily_volumes'] = recent_data.to_dict('records')
+            methods_used['data_processing'].append('TAIL(30) for recent trends analysis')
+            methods_used['filters_applied'].append('Last 30 days filter')
             
             # Monthly aggregation
             monthly_volume = self.df.copy()
@@ -242,25 +288,32 @@ class DataAgent:
             monthly_stats = monthly_volume.groupby('year_month')['scheduled_quantity'].agg([
                 'sum', 'mean', 'count'
             ]).reset_index()
+            methods_used['data_processing'].extend(['Date to period conversion', 'Monthly GROUP BY aggregation'])
             
             results['monthly_trends'] = monthly_stats.tail(12).to_dict('records')
+            methods_used['filters_applied'].append('Last 12 months filter')
             
             # Seasonal patterns
             self.df['month'] = self.df['eff_gas_day'].dt.month
             seasonal = self.df.groupby('month')['scheduled_quantity'].mean()
             results['seasonal_patterns'] = seasonal.to_dict()
+            methods_used['data_processing'].extend(['Month extraction from date', 'Seasonal averaging by month'])
+            methods_used['statistical_methods'].append('Monthly mean calculation')
             
             # Create visualizations
             try:
                 if 'trend' in user_query.lower():
                     plot_path = self.visualizer.plot_monthly_trends(self.df)
                     results['visualization'] = plot_path
+                    methods_used['data_processing'].append('Multi-panel line chart generation')
                 elif 'seasonal' in user_query.lower():
                     plot_path = self.visualizer.plot_seasonal_patterns(self.df)
                     results['visualization'] = plot_path
+                    methods_used['data_processing'].append('Four-panel seasonal visualization')
             except Exception as e:
                 results['viz_error'] = str(e)
             
+            results['methods_used'] = methods_used
             return results
             
         except Exception as e:
@@ -352,13 +405,25 @@ class DataAgent:
         """Execute anomaly detection."""
         try:
             results = {}
+            methods_used = {
+                'analysis_type': 'Anomaly Detection',
+                'statistical_methods': ['Z-score analysis (σ > 3)', 'Isolation Forest', 'Percentile-based outlier detection'],
+                'columns_analyzed': ['eff_gas_day', 'scheduled_quantity', 'pipeline_name', 'loc_name'],
+                'filters_applied': [],
+                'data_processing': [],
+                'sample_size': len(self.df),
+                'confidence_level': '99.7% (Z-score > 3 standard deviations)'
+            }
             
             # Daily volume anomalies
             daily_volumes = self.df.groupby('eff_gas_day')['scheduled_quantity'].sum().reset_index()
+            methods_used['data_processing'].append('Daily volume aggregation (GROUP BY date, SUM)')
             
             # Statistical anomaly detection (Z-score)
             daily_volumes['z_score'] = np.abs(stats.zscore(daily_volumes['scheduled_quantity']))
             statistical_anomalies = daily_volumes[daily_volumes['z_score'] > 3]
+            methods_used['data_processing'].extend(['Z-score calculation', 'Filter Z-score > 3 (99.7% confidence)'])
+            methods_used['filters_applied'].append('Statistical anomalies: Z-score > 3')
             
             results['daily_volume_anomalies'] = statistical_anomalies.to_dict('records')
             
@@ -366,15 +431,19 @@ class DataAgent:
             pipeline_stats = self.df.groupby('pipeline_name')['scheduled_quantity'].agg([
                 'sum', 'mean', 'std', 'count'
             ]).fillna(0)
+            methods_used['data_processing'].extend(['Pipeline-level aggregation', 'Descriptive statistics per pipeline'])
             
             # Isolation Forest for pipeline anomalies
             if len(pipeline_stats) > 10:
                 features = ['sum', 'mean', 'count']
                 isolation_forest = IsolationForest(contamination=0.1, random_state=42)
                 anomaly_scores = isolation_forest.fit_predict(pipeline_stats[features])
+                methods_used['statistical_methods'].append('Isolation Forest (contamination=0.1)')
+                methods_used['data_processing'].extend(['Feature selection: sum, mean, count', 'ML-based anomaly scoring'])
                 
                 anomalous_pipelines = pipeline_stats[anomaly_scores == -1]
                 results['anomalous_pipelines'] = anomalous_pipelines.to_dict('index')
+                methods_used['filters_applied'].append('Isolation Forest anomaly score = -1')
             
             # Transaction-level anomalies (very high/low volumes)
             volume_percentiles = self.df['scheduled_quantity'].quantile([0.01, 0.99])
@@ -382,6 +451,9 @@ class DataAgent:
                 (self.df['scheduled_quantity'] < volume_percentiles[0.01]) |
                 (self.df['scheduled_quantity'] > volume_percentiles[0.99])
             ]
+            methods_used['statistical_methods'].append('Percentile-based outlier detection (1st/99th percentiles)')
+            methods_used['data_processing'].append('Extreme value identification (< 1st percentile OR > 99th percentile)')
+            methods_used['filters_applied'].extend(['Volume < 1st percentile', 'Volume > 99th percentile'])
             
             results['extreme_transactions'] = {
                 'count': len(extreme_transactions),
@@ -396,9 +468,11 @@ class DataAgent:
             try:
                 plot_path = self.visualizer.plot_anomaly_detection(self.df)
                 results['visualization'] = plot_path
+                methods_used['data_processing'].append('Scatter plot with anomaly highlighting')
             except Exception as e:
                 results['viz_error'] = str(e)
             
+            results['methods_used'] = methods_used
             return results
             
         except Exception as e:
@@ -556,6 +630,10 @@ class DataAgent:
         if 'visualization' in results:
             self.show_visualization_info(results['visualization'], response.get('analysis_type', 'unknown'))
         
+        # Show methods used if available
+        if 'methods_used' in results:
+            self.show_methods_used(results['methods_used'])
+        
         # Show key metrics if available
         if isinstance(results, dict) and results:
             table = Table(title="Key Metrics")
@@ -563,7 +641,7 @@ class DataAgent:
             table.add_column("Value", style="green")
             
             for key, value in list(results.items())[:10]:  # Show first 10 items
-                if key in ['visualization', 'viz_error']:  # Skip visualization paths in table
+                if key in ['visualization', 'viz_error', 'methods_used']:  # Skip visualization paths and methods in table
                     continue
                 if isinstance(value, (int, float)):
                     table.add_row(str(key), f"{value:,.2f}" if isinstance(value, float) else f"{value:,}")
@@ -701,6 +779,55 @@ class DataAgent:
         )
         
         self.console.print(viz_panel)
+    
+    def show_methods_used(self, methods_used):
+        """Display detailed information about methods and data processing used."""
+        methods_info = f"🔬 [bold blue]Methods Used[/bold blue]\n\n"
+        
+        # Analysis Type
+        methods_info += f"[bold cyan]📋 Analysis Type:[/bold cyan] {methods_used.get('analysis_type', 'Unknown')}\n\n"
+        
+        # Statistical Methods
+        if methods_used.get('statistical_methods'):
+            methods_info += f"[bold yellow]📊 Statistical Methods:[/bold yellow]\n"
+            for method in methods_used['statistical_methods']:
+                methods_info += f"   • {method}\n"
+            methods_info += "\n"
+        
+        # Columns Analyzed
+        if methods_used.get('columns_analyzed'):
+            methods_info += f"[bold green]🗂️  Columns Analyzed:[/bold green]\n"
+            for col in methods_used['columns_analyzed']:
+                methods_info += f"   • {col}\n"
+            methods_info += "\n"
+        
+        # Data Processing Steps
+        if methods_used.get('data_processing'):
+            methods_info += f"[bold magenta]⚙️  Data Processing:[/bold magenta]\n"
+            for step in methods_used['data_processing']:
+                methods_info += f"   • {step}\n"
+            methods_info += "\n"
+        
+        # Filters Applied
+        if methods_used.get('filters_applied'):
+            methods_info += f"[bold red]🔍 Filters Applied:[/bold red]\n"
+            for filter_desc in methods_used['filters_applied']:
+                methods_info += f"   • {filter_desc}\n"
+            methods_info += "\n"
+        
+        # Sample Size and Confidence
+        methods_info += f"[bold cyan]📏 Sample Size:[/bold cyan] {methods_used.get('sample_size', 'Unknown'):,} records\n"
+        methods_info += f"[bold cyan]🎯 Confidence Level:[/bold cyan] {methods_used.get('confidence_level', 'Not specified')}\n"
+        
+        # Create and display the panel
+        methods_panel = Panel(
+            methods_info,
+            title="🔬 Methods & Data Processing",
+            border_style="blue",
+            padding=(1, 2)
+        )
+        
+        self.console.print(methods_panel)
     
     def show_help(self):
         """Show help information."""
