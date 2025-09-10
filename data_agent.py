@@ -401,10 +401,52 @@ class DataAgent:
         if any(word in query_lower for word in ['anomaly', 'unusual', 'outlier']):
             issues.append("Anomaly detection sensitive to threshold choices")
         
+        # Check for structured query patterns
+        if self._is_structured_query(query):
+            issues.append("Precise filtering query - results depend on exact data values")
+        
         if not issues:
             issues.append("Standard data quality and interpretation caveats apply")
         
         return "; ".join(issues)
+    
+    def _is_structured_query(self, query):
+        """Check if this is a structured query that should use Text-to-Pandas."""
+        query_lower = query.lower()
+        
+        # Check for structured query patterns
+        structured_patterns = [
+            ('how many', 'unique'),
+            ('count', 'where'),
+            ('how many', 'in'),
+            ('count unique', ''),
+            ('number of', 'where'),
+            ('list', 'where'),
+            ('find', 'where'),
+        ]
+        
+        for pattern1, pattern2 in structured_patterns:
+            if pattern1 in query_lower and (not pattern2 or pattern2 in query_lower):
+                return True
+        
+        # Check for specific column references combined with filtering
+        column_names = ['pipeline_name', 'category_short', 'state_abb', 'loc_name', 'connecting_pipeline']
+        has_column_ref = any(col in query_lower for col in column_names)
+        has_filter_words = any(word in query_lower for word in ['where', 'equals', 'in', 'with', '=='])
+        
+        return has_column_ref and has_filter_words
+    
+    def _results_are_minimal(self, results):
+        """Check if results are minimal/unhelpful."""
+        if not results or 'error' in results:
+            return True
+        
+        # Check if we only got basic dataset info
+        meaningful_keys = ['top_pipelines', 'top_states', 'summary_stats', 'geographic_analysis', 
+                          'time_series', 'anomaly_scores', 'causal_hypotheses', 'structured_query_result']
+        
+        has_meaningful_results = any(key in results for key in meaningful_keys)
+        return not has_meaningful_results
     
     def _suggest_analysis_approach(self, query):
         """Suggest the best analysis approach."""
@@ -913,6 +955,11 @@ class DataAgent:
         # Step 2: Execute appropriate analysis
         query_type = query_analysis.get('query_type', 'simple_stats')
         
+        # Override query type if we detect structured query patterns
+        if self._is_structured_query(user_query):
+            query_type = 'structured_query'
+            self.console.print("🔄 Detected structured query - using Text-to-Pandas", style="yellow")
+        
         if query_type == 'simple_stats':
             results = self.execute_simple_stats(query_analysis, user_query)
         elif query_type == 'time_series':
@@ -929,6 +976,17 @@ class DataAgent:
             results = self.execute_structured_query(query_analysis, user_query)
         else:
             results = self.execute_simple_stats(query_analysis, user_query)
+        
+        # Fallback: If simple_stats returned minimal results and this looks like a structured query, try Text-to-Pandas
+        if (query_type == 'simple_stats' and 
+            self._is_structured_query(user_query) and
+            self._results_are_minimal(results)):
+            
+            self.console.print("🔄 Trying structured query approach...", style="yellow")
+            structured_results = self.execute_structured_query(query_analysis, user_query)
+            if 'structured_query_result' in structured_results:
+                results = structured_results
+                query_type = 'structured_query'
         
         # Step 3: Quality assessment and meta-reasoning
         quality_assessment = self._assess_result_quality(results, query_analysis, user_query)
